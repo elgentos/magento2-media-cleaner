@@ -1,5 +1,7 @@
 # Magento 2 Media Cleaner (Go)
 
+## Work in progress - don't try this at home, you'll probably loose some data!
+
 A standalone Go application for analyzing and cleaning Magento 2 catalog media files. This is a high-performance refactor of [sivaschenko/magento2-clean-media](https://github.com/sivaschenko/magento2-clean-media) with parallel file scanning and optimized memory usage.
 
 ## Features
