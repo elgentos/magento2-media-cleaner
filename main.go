@@ -85,123 +85,159 @@ func main() {
 
 	var config Config
 	var resolvedMagentoRoot string
+	var envConfig Config
+	loadedFromEnv := false
 
-	// Check if database flags are provided
-	dbFlagsProvided := *dbName != "" || *dbUser != ""
-
-	if dbFlagsProvided {
-		// Use CLI flags for database configuration
-		if *dbName == "" || *dbUser == "" {
-			fmt.Println("Error: When providing database flags, both -db-name and -db-user are required")
-			flag.Usage()
+	// Try to find and load Magento root
+	var err error
+	if *magentoRoot != "" {
+		// User provided explicit Magento root
+		envPath := filepath.Join(*magentoRoot, "app", "etc", "env.php")
+		if _, err := os.Stat(envPath); os.IsNotExist(err) {
+			fmt.Printf("Error: Invalid Magento root directory '%s' (app/etc/env.php not found)\n", *magentoRoot)
 			os.Exit(1)
 		}
-
-		// If magento-root is provided, use it to derive media path
-		if *magentoRoot != "" {
-			// Verify the provided Magento root is valid
-			envPath := filepath.Join(*magentoRoot, "app", "etc", "env.php")
-			if _, err := os.Stat(envPath); os.IsNotExist(err) {
-				fmt.Printf("Error: Invalid Magento root directory '%s' (app/etc/env.php not found)\n", *magentoRoot)
-				os.Exit(1)
-			}
-			resolvedMagentoRoot = *magentoRoot
-
-			// Set media path default if not provided
-			if *mediaPath == "" {
-				*mediaPath = filepath.Join(resolvedMagentoRoot, "pub", "media", "catalog", "product")
-			}
-		}
-
-		// Validate media path is set
-		if *mediaPath == "" {
-			fmt.Println("Error: -media-path is required when not using -magento-root")
-			flag.Usage()
-			os.Exit(1)
-		}
-
-		config = Config{
-			DBHost:        *dbHost,
-			DBPort:        *dbPort,
-			DBName:        *dbName,
-			DBUser:        *dbUser,
-			DBPass:        *dbPass,
-			DBTablePrefix: *dbPrefix,
-			MediaPath:     *mediaPath,
-			WorkerCount:   *workers,
-		}
+		resolvedMagentoRoot = *magentoRoot
 	} else {
-		// Try to load from env.php
-		var err error
-
-		// Determine Magento root
-		if *magentoRoot != "" {
-			// User provided explicit Magento root
-			envPath := filepath.Join(*magentoRoot, "app", "etc", "env.php")
-			if _, err := os.Stat(envPath); os.IsNotExist(err) {
-				fmt.Printf("Error: Invalid Magento root directory '%s' (app/etc/env.php not found)\n", *magentoRoot)
-				os.Exit(1)
-			}
-			resolvedMagentoRoot = *magentoRoot
-		} else {
-			// Auto-detect Magento root
-			startPath := *mediaPath
-			if startPath == "" {
-				startPath, _ = os.Getwd()
-			}
-
-			resolvedMagentoRoot, err = findMagentoRoot(startPath)
-			if err != nil {
-				fmt.Println("Error: Could not find Magento root directory.")
-				fmt.Println("Please either:")
-				fmt.Println("  1. Run this command from within a Magento installation,")
-				fmt.Println("  2. Provide -magento-root flag, or")
-				fmt.Println("  3. Provide database credentials via command line flags")
-				flag.Usage()
-				os.Exit(1)
-			}
+		// Auto-detect Magento root (only if db credentials not fully provided)
+		startPath := *mediaPath
+		if startPath == "" {
+			startPath, _ = os.Getwd()
 		}
 
+		resolvedMagentoRoot, err = findMagentoRoot(startPath)
+	}
+
+	// If we found a Magento root, try to load env.php
+	if resolvedMagentoRoot != "" {
 		fmt.Printf("Found Magento root: %s\n", resolvedMagentoRoot)
 
-		envConfig, err := loadConfigFromEnvPHP(resolvedMagentoRoot)
+		envConfig, err = loadConfigFromEnvPHP(resolvedMagentoRoot)
 		if err != nil {
-			fmt.Printf("Error reading env.php: %v\n", err)
-			fmt.Println("Please provide database credentials via command line flags")
-			flag.Usage()
-			os.Exit(1)
+			fmt.Printf("Warning: Could not read env.php: %v\n", err)
+		} else {
+			loadedFromEnv = true
 		}
 
 		// Set media path default if not provided
 		if *mediaPath == "" {
 			*mediaPath = filepath.Join(resolvedMagentoRoot, "pub", "media", "catalog", "product")
 		}
+	}
 
+	// Build config: Start with env.php values (if loaded), then override with CLI flags
+	if loadedFromEnv {
+		config = envConfig
+	} else {
+		// Initialize with defaults
 		config = Config{
-			DBHost:        envConfig.DBHost,
-			DBPort:        envConfig.DBPort,
-			DBName:        envConfig.DBName,
-			DBUser:        envConfig.DBUser,
-			DBPass:        envConfig.DBPass,
-			DBTablePrefix: envConfig.DBTablePrefix,
-			MediaPath:     *mediaPath,
-			WorkerCount:   *workers,
-		}
-
-		fmt.Printf("Loaded database configuration from env.php\n")
-		fmt.Printf("  Database: %s@%s:%s/%s\n", config.DBUser, config.DBHost, config.DBPort, config.DBName)
-		if config.DBTablePrefix != "" {
-			fmt.Printf("  Table prefix: %s\n", config.DBTablePrefix)
+			DBHost: "localhost",
+			DBPort: "3306",
 		}
 	}
 
-	// Final validation that media path is set
-	if config.MediaPath == "" {
-		fmt.Println("Error: -media-path could not be determined")
+	// Override with CLI flags if explicitly provided
+	// Check if flags were explicitly set by user (not just defaults)
+	hostSet := false
+	portSet := false
+	nameSet := false
+	userSet := false
+	passSet := false
+	prefixSet := false
+
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "db-host":
+			hostSet = true
+		case "db-port":
+			portSet = true
+		case "db-name":
+			nameSet = true
+		case "db-user":
+			userSet = true
+		case "db-pass":
+			passSet = true
+		case "db-prefix":
+			prefixSet = true
+		}
+	})
+
+	// Apply overrides
+	if hostSet {
+		config.DBHost = *dbHost
+	}
+	if portSet {
+		config.DBPort = *dbPort
+	}
+	if nameSet {
+		config.DBName = *dbName
+	}
+	if userSet {
+		config.DBUser = *dbUser
+	}
+	if passSet {
+		config.DBPass = *dbPass
+	}
+	if prefixSet {
+		config.DBTablePrefix = *dbPrefix
+	}
+
+	// Set media path and workers
+	if *mediaPath != "" {
+		config.MediaPath = *mediaPath
+	}
+	config.WorkerCount = *workers
+
+	// Validate required fields
+	if config.DBName == "" || config.DBUser == "" {
+		fmt.Println("Error: Database name and user are required.")
+		fmt.Println("Please either:")
+		fmt.Println("  1. Run this command from within a Magento installation,")
+		fmt.Println("  2. Provide -magento-root flag, or")
+		fmt.Println("  3. Provide -db-name and -db-user flags")
 		flag.Usage()
 		os.Exit(1)
 	}
 
+	if config.MediaPath == "" {
+		fmt.Println("Error: -media-path is required when not using -magento-root")
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	// Print configuration summary
+	if loadedFromEnv {
+		fmt.Printf("Loaded database configuration from env.php")
+		// Check if any CLI flags override env.php
+		overrides := []string{}
+		if hostSet {
+			overrides = append(overrides, "host")
+		}
+		if portSet {
+			overrides = append(overrides, "port")
+		}
+		if nameSet {
+			overrides = append(overrides, "name")
+		}
+		if userSet {
+			overrides = append(overrides, "user")
+		}
+		if passSet {
+			overrides = append(overrides, "password")
+		}
+		if prefixSet {
+			overrides = append(overrides, "prefix")
+		}
+		if len(overrides) > 0 {
+			fmt.Printf(" (overridden: %s)", strings.Join(overrides, ", "))
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("  Database: %s@%s:%s/%s\n", config.DBUser, config.DBHost, config.DBPort, config.DBName)
+	if config.DBTablePrefix != "" {
+		fmt.Printf("  Table prefix: %s\n", config.DBTablePrefix)
+	}
 	fmt.Printf("  Media path: %s\n", config.MediaPath)
 
 	// Connect to database

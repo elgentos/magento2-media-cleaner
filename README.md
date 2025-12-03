@@ -55,24 +55,34 @@ The tool will automatically:
 - Read database credentials from `app/etc/env.php`
 - Derive the media path as `<magento_root>/pub/media/catalog/product`
 
-### Manual Configuration
+### Manual Configuration & Overrides
 
-You can still provide database credentials manually via command line flags:
+You can provide database credentials manually via command line flags. If you specify `-magento-root`, the tool will load `env.php` first and then **override** with any CLI flags you provide:
 
 ```bash
-# Full manual configuration
+# Full manual configuration (no env.php)
 ./magento2-media-cleaner \
   -db-name="magento2" \
   -db-user="root" \
   -db-pass="password" \
   -media-path="/var/www/html/pub/media/catalog/product"
 
-# Manual DB config with automatic media path detection
+# Load from env.php but override specific values (e.g., use localhost instead of Docker host)
 ./magento2-media-cleaner \
-  -db-name="magento2" \
-  -db-user="root" \
-  -magento-root="/var/www/html/magento"
+  -magento-root="/var/www/html/magento" \
+  -db-host="localhost" \
+  -db-port="3308"
+
+# Override just the database name
+./magento2-media-cleaner \
+  -magento-root="/var/www/html/magento" \
+  -db-name="different_database"
 ```
+
+**How overrides work:**
+- The tool loads configuration from `env.php` if available
+- Any explicitly provided CLI flags override the corresponding `env.php` values
+- The tool shows which values were overridden: `(overridden: host, port)`
 
 ### List Operations
 
