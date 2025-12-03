@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,34 +57,138 @@ func main() {
 	removeDupes := flag.Bool("x", false, "Remove duplicated files and update database")
 
 	// Configuration flags
-	dbHost := flag.String("db-host", "localhost", "Database host")
-	dbPort := flag.String("db-port", "3306", "Database port")
-	dbName := flag.String("db-name", "", "Database name")
-	dbUser := flag.String("db-user", "", "Database user")
-	dbPass := flag.String("db-pass", "", "Database password")
-	dbPrefix := flag.String("db-prefix", "", "Database table prefix")
-	mediaPath := flag.String("media-path", "", "Path to pub/media/catalog/product")
+	magentoRoot := flag.String("magento-root", "", "Path to Magento root directory (optional, auto-detects if not provided)")
+	dbHost := flag.String("db-host", "localhost", "Database host (optional, reads from app/etc/env.php if not provided)")
+	dbPort := flag.String("db-port", "3306", "Database port (optional, reads from app/etc/env.php if not provided)")
+	dbName := flag.String("db-name", "", "Database name (optional, reads from app/etc/env.php if not provided)")
+	dbUser := flag.String("db-user", "", "Database user (optional, reads from app/etc/env.php if not provided)")
+	dbPass := flag.String("db-pass", "", "Database password (optional, reads from app/etc/env.php if not provided)")
+	dbPrefix := flag.String("db-prefix", "", "Database table prefix (optional, reads from app/etc/env.php if not provided)")
+	mediaPath := flag.String("media-path", "", "Path to pub/media/catalog/product (optional, defaults to <magento_root>/pub/media/catalog/product)")
 	workers := flag.Int("workers", 10, "Number of parallel workers for file scanning")
 
 	flag.Parse()
 
-	// Validate required flags
-	if *dbName == "" || *dbUser == "" || *mediaPath == "" {
-		fmt.Println("Error: -db-name, -db-user, and -media-path are required")
+	var config Config
+	var resolvedMagentoRoot string
+
+	// Check if database flags are provided
+	dbFlagsProvided := *dbName != "" || *dbUser != ""
+
+	if dbFlagsProvided {
+		// Use CLI flags for database configuration
+		if *dbName == "" || *dbUser == "" {
+			fmt.Println("Error: When providing database flags, both -db-name and -db-user are required")
+			flag.Usage()
+			os.Exit(1)
+		}
+
+		// If magento-root is provided, use it to derive media path
+		if *magentoRoot != "" {
+			// Verify the provided Magento root is valid
+			envPath := filepath.Join(*magentoRoot, "app", "etc", "env.php")
+			if _, err := os.Stat(envPath); os.IsNotExist(err) {
+				fmt.Printf("Error: Invalid Magento root directory '%s' (app/etc/env.php not found)\n", *magentoRoot)
+				os.Exit(1)
+			}
+			resolvedMagentoRoot = *magentoRoot
+
+			// Set media path default if not provided
+			if *mediaPath == "" {
+				*mediaPath = filepath.Join(resolvedMagentoRoot, "pub", "media", "catalog", "product")
+			}
+		}
+
+		// Validate media path is set
+		if *mediaPath == "" {
+			fmt.Println("Error: -media-path is required when not using -magento-root")
+			flag.Usage()
+			os.Exit(1)
+		}
+
+		config = Config{
+			DBHost:        *dbHost,
+			DBPort:        *dbPort,
+			DBName:        *dbName,
+			DBUser:        *dbUser,
+			DBPass:        *dbPass,
+			DBTablePrefix: *dbPrefix,
+			MediaPath:     *mediaPath,
+			WorkerCount:   *workers,
+		}
+	} else {
+		// Try to load from env.php
+		var err error
+
+		// Determine Magento root
+		if *magentoRoot != "" {
+			// User provided explicit Magento root
+			envPath := filepath.Join(*magentoRoot, "app", "etc", "env.php")
+			if _, err := os.Stat(envPath); os.IsNotExist(err) {
+				fmt.Printf("Error: Invalid Magento root directory '%s' (app/etc/env.php not found)\n", *magentoRoot)
+				os.Exit(1)
+			}
+			resolvedMagentoRoot = *magentoRoot
+		} else {
+			// Auto-detect Magento root
+			startPath := *mediaPath
+			if startPath == "" {
+				startPath, _ = os.Getwd()
+			}
+
+			resolvedMagentoRoot, err = findMagentoRoot(startPath)
+			if err != nil {
+				fmt.Println("Error: Could not find Magento root directory.")
+				fmt.Println("Please either:")
+				fmt.Println("  1. Run this command from within a Magento installation,")
+				fmt.Println("  2. Provide -magento-root flag, or")
+				fmt.Println("  3. Provide database credentials via command line flags")
+				flag.Usage()
+				os.Exit(1)
+			}
+		}
+
+		fmt.Printf("Found Magento root: %s\n", resolvedMagentoRoot)
+
+		envConfig, err := loadConfigFromEnvPHP(resolvedMagentoRoot)
+		if err != nil {
+			fmt.Printf("Error reading env.php: %v\n", err)
+			fmt.Println("Please provide database credentials via command line flags")
+			flag.Usage()
+			os.Exit(1)
+		}
+
+		// Set media path default if not provided
+		if *mediaPath == "" {
+			*mediaPath = filepath.Join(resolvedMagentoRoot, "pub", "media", "catalog", "product")
+		}
+
+		config = Config{
+			DBHost:        envConfig.DBHost,
+			DBPort:        envConfig.DBPort,
+			DBName:        envConfig.DBName,
+			DBUser:        envConfig.DBUser,
+			DBPass:        envConfig.DBPass,
+			DBTablePrefix: envConfig.DBTablePrefix,
+			MediaPath:     *mediaPath,
+			WorkerCount:   *workers,
+		}
+
+		fmt.Printf("Loaded database configuration from env.php\n")
+		fmt.Printf("  Database: %s@%s:%s/%s\n", config.DBUser, config.DBHost, config.DBPort, config.DBName)
+		if config.DBTablePrefix != "" {
+			fmt.Printf("  Table prefix: %s\n", config.DBTablePrefix)
+		}
+	}
+
+	// Final validation that media path is set
+	if config.MediaPath == "" {
+		fmt.Println("Error: -media-path could not be determined")
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	config := Config{
-		DBHost:        *dbHost,
-		DBPort:        *dbPort,
-		DBName:        *dbName,
-		DBUser:        *dbUser,
-		DBPass:        *dbPass,
-		DBTablePrefix: *dbPrefix,
-		MediaPath:     *mediaPath,
-		WorkerCount:   *workers,
-	}
+	fmt.Printf("  Media path: %s\n", config.MediaPath)
 
 	// Connect to database
 	db, err := connectDB(config)
@@ -103,7 +208,7 @@ func main() {
 	stats := &Stats{}
 
 	// Scan filesystem with parallel workers
-	fmt.Println("Scanning filesystem...")
+	fmt.Println("\nScanning filesystem...")
 	filesMap, hashMap := scanFilesystem(config, stats)
 
 	// Fetch media gallery entries from database
@@ -456,4 +561,143 @@ func printStats(stats *Stats, dbEntries int) {
 		fmt.Printf("Disk space freed: %.2f MB\n", float64(stats.BytesFreed)/1024/1024)
 	}
 	fmt.Println(strings.Repeat("=", 50))
+}
+
+func findMagentoRoot(startPath string) (string, error) {
+	// Start from the given path and traverse up until we find app/etc/env.php
+	currentPath := startPath
+
+	for {
+		envPath := filepath.Join(currentPath, "app", "etc", "env.php")
+		if _, err := os.Stat(envPath); err == nil {
+			return currentPath, nil
+		}
+
+		// Move up one directory
+		parentPath := filepath.Dir(currentPath)
+		if parentPath == currentPath {
+			// Reached root directory without finding Magento
+			return "", fmt.Errorf("could not find Magento root directory (app/etc/env.php not found)")
+		}
+		currentPath = parentPath
+	}
+}
+
+func parseEnvPHP(envPath string) (map[string]interface{}, error) {
+	content, err := os.ReadFile(envPath)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]interface{})
+	text := string(content)
+
+	// Find the 'db' section - need to handle nested arrays properly
+	dbStart := strings.Index(text, "'db' =>")
+	if dbStart == -1 {
+		return result, fmt.Errorf("'db' section not found in env.php")
+	}
+
+	// Find the matching closing bracket for the db section
+	// We need to count brackets to handle nested arrays
+	dbSection := extractBalancedSection(text[dbStart:])
+
+	// Extract table_prefix from db section
+	prefixPattern := regexp.MustCompile(`'table_prefix'\s*=>\s*'([^']*)'`)
+	prefixMatch := prefixPattern.FindStringSubmatch(dbSection)
+	if len(prefixMatch) > 1 {
+		result["table_prefix"] = prefixMatch[1]
+	} else {
+		result["table_prefix"] = ""
+	}
+
+	// Find connection -> default section
+	connStart := strings.Index(dbSection, "'connection' =>")
+	if connStart == -1 {
+		return result, fmt.Errorf("'connection' section not found in env.php")
+	}
+
+	connSection := extractBalancedSection(dbSection[connStart:])
+
+	defaultStart := strings.Index(connSection, "'default' =>")
+	if defaultStart == -1 {
+		return result, fmt.Errorf("'default' connection not found in env.php")
+	}
+
+	defaultSection := extractBalancedSection(connSection[defaultStart:])
+
+	// Extract individual fields
+	result["host"] = extractValue(defaultSection, "host")
+	result["dbname"] = extractValue(defaultSection, "dbname")
+	result["username"] = extractValue(defaultSection, "username")
+	result["password"] = extractValue(defaultSection, "password")
+
+	return result, nil
+}
+
+// extractBalancedSection extracts content within balanced brackets starting from text
+func extractBalancedSection(text string) string {
+	// Find the opening bracket
+	start := strings.Index(text, "[")
+	if start == -1 {
+		return ""
+	}
+
+	depth := 0
+	for i := start; i < len(text); i++ {
+		if text[i] == '[' {
+			depth++
+		} else if text[i] == ']' {
+			depth--
+			if depth == 0 {
+				return text[start:i+1]
+			}
+		}
+	}
+	return ""
+}
+
+func extractValue(text, key string) string {
+	pattern := regexp.MustCompile(fmt.Sprintf(`'%s'\s*=>\s*'([^']*)'`, key))
+	match := pattern.FindStringSubmatch(text)
+	if len(match) > 1 {
+		return match[1]
+	}
+	return ""
+}
+
+func loadConfigFromEnvPHP(magentoRoot string) (Config, error) {
+	envPath := filepath.Join(magentoRoot, "app", "etc", "env.php")
+
+	envData, err := parseEnvPHP(envPath)
+	if err != nil {
+		return Config{}, fmt.Errorf("failed to parse env.php: %v", err)
+	}
+
+	config := Config{
+		DBHost:        getStringValue(envData, "host", "localhost"),
+		DBPort:        "3306", // Default MySQL port
+		DBName:        getStringValue(envData, "dbname", ""),
+		DBUser:        getStringValue(envData, "username", ""),
+		DBPass:        getStringValue(envData, "password", ""),
+		DBTablePrefix: getStringValue(envData, "table_prefix", ""),
+	}
+
+	// Extract port from host if it contains a colon
+	if strings.Contains(config.DBHost, ":") {
+		parts := strings.Split(config.DBHost, ":")
+		config.DBHost = parts[0]
+		config.DBPort = parts[1]
+	}
+
+	return config, nil
+}
+
+func getStringValue(data map[string]interface{}, key, defaultVal string) string {
+	if val, ok := data[key]; ok {
+		if strVal, ok := val.(string); ok {
+			return strVal
+		}
+	}
+	return defaultVal
 }

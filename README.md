@@ -34,59 +34,89 @@ go build -o magento2-media-cleaner
 
 ## Usage
 
-### Basic Information
+### Automatic Configuration (Recommended)
+
+The tool can automatically read database credentials from `app/etc/env.php` and derive the media path:
 
 ```bash
+# Option 1: Run from Magento root directory (fully automatic)
+cd /var/www/html/magento
+./magento2-media-cleaner -u
+
+# Option 2: Specify Magento root from anywhere (derives media path automatically)
+./magento2-media-cleaner -u -magento-root="/var/www/html/magento"
+
+# Option 3: Specify media path (auto-detects Magento root by traversing up)
+./magento2-media-cleaner -u -media-path="/var/www/html/magento/pub/media/catalog/product"
+```
+
+The tool will automatically:
+- Find the Magento root directory (by searching for `app/etc/env.php`)
+- Read database credentials from `app/etc/env.php`
+- Derive the media path as `<magento_root>/pub/media/catalog/product`
+
+### Manual Configuration
+
+You can still provide database credentials manually via command line flags:
+
+```bash
+# Full manual configuration
 ./magento2-media-cleaner \
   -db-name="magento2" \
   -db-user="root" \
   -db-pass="password" \
   -media-path="/var/www/html/pub/media/catalog/product"
+
+# Manual DB config with automatic media path detection
+./magento2-media-cleaner \
+  -db-name="magento2" \
+  -db-user="root" \
+  -magento-root="/var/www/html/magento"
 ```
 
 ### List Operations
 
 ```bash
 # List unused files (in filesystem but not referenced in DB)
-./magento2-media-cleaner -u -db-name="magento2" -db-user="root" -media-path="/path/to/media"
+./magento2-media-cleaner -u
 
 # List missing files (referenced in DB but not in filesystem)
-./magento2-media-cleaner -m -db-name="magento2" -db-user="root" -media-path="/path/to/media"
+./magento2-media-cleaner -m
 
 # List duplicate files
-./magento2-media-cleaner -d -db-name="magento2" -db-user="root" -media-path="/path/to/media"
+./magento2-media-cleaner -d
 ```
 
 ### Cleanup Operations
 
 ```bash
 # Remove unused files from filesystem
-./magento2-media-cleaner -r -db-name="magento2" -db-user="root" -media-path="/path/to/media"
+./magento2-media-cleaner -r
 
 # Remove orphaned database entries (for missing files)
-./magento2-media-cleaner -o -db-name="magento2" -db-user="root" -media-path="/path/to/media"
+./magento2-media-cleaner -o
 
 # Remove duplicate files and update all DB references to point to original
-./magento2-media-cleaner -x -db-name="magento2" -db-user="root" -media-path="/path/to/media"
+./magento2-media-cleaner -x
 
 # Combine operations
-./magento2-media-cleaner -r -o -x -db-name="magento2" -db-user="root" -media-path="/path/to/media"
+./magento2-media-cleaner -r -o -x
 ```
 
 ## Configuration Options
 
-### Required Flags
-
-- `-db-name`: Database name
-- `-db-user`: Database username
-- `-media-path`: Absolute path to `pub/media/catalog/product` directory
-
 ### Optional Flags
 
-- `-db-host`: Database host (default: `localhost`)
-- `-db-port`: Database port (default: `3306`)
-- `-db-pass`: Database password (default: empty)
-- `-db-prefix`: Database table prefix (default: empty)
+All configuration flags are now optional. The tool will attempt to read from `app/etc/env.php` if not provided:
+
+- `-magento-root`: Path to Magento root directory (auto-detects if not provided)
+- `-db-name`: Database name (reads from env.php if not provided)
+- `-db-user`: Database username (reads from env.php if not provided)
+- `-db-pass`: Database password (reads from env.php if not provided)
+- `-db-host`: Database host (reads from env.php if not provided, default: `localhost`)
+- `-db-port`: Database port (reads from env.php if not provided, default: `3306`)
+- `-db-prefix`: Database table prefix (reads from env.php if not provided)
+- `-media-path`: Absolute path to `pub/media/catalog/product` directory (derives from magento-root if not provided)
 - `-workers`: Number of parallel workers for file scanning (default: `10`)
 
 ### Operation Flags
