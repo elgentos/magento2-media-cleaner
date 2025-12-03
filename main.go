@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/cespare/xxhash/v2"
@@ -256,18 +257,23 @@ func main() {
 	}
 
 	stats := &Stats{}
+	startTime := time.Now()
 
 	// Scan filesystem with parallel workers
 	fmt.Println("\nScanning filesystem...")
+	scanStart := time.Now()
 	filesMap, hashMap := scanFilesystem(config, stats)
+	scanDuration := time.Since(scanStart)
 
 	// Fetch media gallery entries from database
 	fmt.Println("Querying database...")
+	dbStart := time.Now()
 	dbPaths, err := getMediaGalleryPaths(db, config)
 	if err != nil {
 		fmt.Printf("Error querying database: %v\n", err)
 		os.Exit(1)
 	}
+	dbDuration := time.Since(dbStart)
 
 	// Convert to map for faster lookups
 	dbPathsMap := make(map[string]bool, len(dbPaths))
@@ -375,7 +381,8 @@ func main() {
 	}
 
 	// Print summary
-	printStats(stats, len(dbPaths))
+	totalDuration := time.Since(startTime)
+	printStats(stats, len(dbPaths), scanDuration, dbDuration, totalDuration)
 }
 
 func connectDB(config Config) (*sql.DB, error) {
@@ -637,7 +644,7 @@ func updateDatabaseForDuplicate(db *sql.DB, config Config, original, duplicate s
 	return vRows, gRows, nil
 }
 
-func printStats(stats *Stats, dbEntries int) {
+func printStats(stats *Stats, dbEntries int, scanDuration, dbDuration, totalDuration time.Duration) {
 	fmt.Println("\n" + strings.Repeat("=", 50))
 	fmt.Printf("Media Gallery entries: %d\n", dbEntries)
 	fmt.Printf("Files in directory: %d\n", stats.TotalFiles)
@@ -661,6 +668,19 @@ func printStats(stats *Stats, dbEntries int) {
 	if stats.BytesFreed > 0 {
 		fmt.Printf("Disk space freed: %.2f MB\n", float64(stats.BytesFreed)/1024/1024)
 	}
+	fmt.Println(strings.Repeat("=", 50))
+
+	// Performance timing
+	fmt.Println("\nPerformance:")
+	fmt.Printf("Filesystem scan: %v\n", scanDuration.Round(time.Millisecond))
+	fmt.Printf("Database query: %v\n", dbDuration.Round(time.Millisecond))
+	fmt.Printf("Total time: %v\n", totalDuration.Round(time.Millisecond))
+
+	if stats.TotalFiles > 0 && scanDuration > 0 {
+		filesPerSecond := float64(stats.TotalFiles) / scanDuration.Seconds()
+		fmt.Printf("Files processed: %.0f files/second\n", filesPerSecond)
+	}
+
 	fmt.Println(strings.Repeat("=", 50))
 }
 

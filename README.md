@@ -177,6 +177,13 @@ Updated catalog_product_entity_varchar rows: 89
 Updated catalog_product_entity_media_gallery rows: 127
 Disk space freed: 1247.32 MB
 ==================================================
+
+Performance:
+Filesystem scan: 2.3s
+Database query: 145ms
+Total time: 3.1s
+Files processed: 8235 files/second
+==================================================
 ```
 
 ## Architecture
