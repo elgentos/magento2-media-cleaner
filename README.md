@@ -78,12 +78,18 @@ You can still provide database credentials manually via command line flags:
 
 ```bash
 # List unused files (in filesystem but not referenced in DB)
+./magento2-media-cleaner --list-unused
+# or use shorthand:
 ./magento2-media-cleaner -u
 
 # List missing files (referenced in DB but not in filesystem)
+./magento2-media-cleaner --list-missing
+# or use shorthand:
 ./magento2-media-cleaner -m
 
 # List duplicate files
+./magento2-media-cleaner --list-duplicates
+# or use shorthand:
 ./magento2-media-cleaner -d
 ```
 
@@ -91,15 +97,23 @@ You can still provide database credentials manually via command line flags:
 
 ```bash
 # Remove unused files from filesystem
+./magento2-media-cleaner --remove-unused
+# or use shorthand:
 ./magento2-media-cleaner -r
 
 # Remove orphaned database entries (for missing files)
+./magento2-media-cleaner --remove-orphans
+# or use shorthand:
 ./magento2-media-cleaner -o
 
 # Remove duplicate files and update all DB references to point to original
+./magento2-media-cleaner --remove-duplicates
+# or use shorthand:
 ./magento2-media-cleaner -x
 
-# Combine operations
+# Combine operations (can mix long and short flags)
+./magento2-media-cleaner --remove-unused --remove-orphans --remove-duplicates
+# or use shorthand:
 ./magento2-media-cleaner -r -o -x
 ```
 
@@ -121,12 +135,17 @@ All configuration flags are now optional. The tool will attempt to read from `ap
 
 ### Operation Flags
 
-- `-u`: List unused media files
-- `-m`: List missing media files
-- `-d`: List duplicated files
-- `-r`: Remove unused product images
-- `-o`: Remove orphaned media gallery rows
-- `-x`: Remove duplicated files and update database
+All operation flags support both long descriptive names and short aliases:
+
+**List Operations:**
+- `--list-unused` / `-u`: List unused media files
+- `--list-missing` / `-m`: List missing media files
+- `--list-duplicates` / `-d`: List duplicated files
+
+**Cleanup Operations:**
+- `--remove-unused` / `-r`: Remove unused product images
+- `--remove-orphans` / `-o`: Remove orphaned media gallery rows
+- `--remove-duplicates` / `-x`: Remove duplicated files and update database
 
 ## Example Output
 

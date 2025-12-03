@@ -48,13 +48,26 @@ type Stats struct {
 }
 
 func main() {
-	// CLI flags
-	listUnused := flag.Bool("u", false, "List unused media files")
-	listMissing := flag.Bool("m", false, "List missing media files")
-	listDupes := flag.Bool("d", false, "List duplicated files")
-	removeUnused := flag.Bool("r", false, "Remove unused product images")
-	removeOrphans := flag.Bool("o", false, "Remove orphaned media gallery rows")
-	removeDupes := flag.Bool("x", false, "Remove duplicated files and update database")
+	// Operation flags with both short and long names
+	var listUnused, listMissing, listDupes, removeUnused, removeOrphans, removeDupes bool
+
+	flag.BoolVar(&listUnused, "list-unused", false, "List unused media files")
+	flag.BoolVar(&listUnused, "u", false, "List unused media files (shorthand)")
+
+	flag.BoolVar(&listMissing, "list-missing", false, "List missing media files")
+	flag.BoolVar(&listMissing, "m", false, "List missing media files (shorthand)")
+
+	flag.BoolVar(&listDupes, "list-duplicates", false, "List duplicated files")
+	flag.BoolVar(&listDupes, "d", false, "List duplicated files (shorthand)")
+
+	flag.BoolVar(&removeUnused, "remove-unused", false, "Remove unused product images")
+	flag.BoolVar(&removeUnused, "r", false, "Remove unused product images (shorthand)")
+
+	flag.BoolVar(&removeOrphans, "remove-orphans", false, "Remove orphaned media gallery rows")
+	flag.BoolVar(&removeOrphans, "o", false, "Remove orphaned media gallery rows (shorthand)")
+
+	flag.BoolVar(&removeDupes, "remove-duplicates", false, "Remove duplicated files and update database")
+	flag.BoolVar(&removeDupes, "x", false, "Remove duplicated files and update database (shorthand)")
 
 	// Configuration flags
 	magentoRoot := flag.String("magento-root", "", "Path to Magento root directory (optional, auto-detects if not provided)")
@@ -244,14 +257,14 @@ func main() {
 	}
 
 	// Process actions based on flags
-	if *listUnused {
+	if listUnused {
 		fmt.Println("\nUnused files:")
 		for _, path := range unusedFiles {
 			fmt.Println(path)
 		}
 	}
 
-	if *removeUnused {
+	if removeUnused {
 		fmt.Println("\nRemoving unused files...")
 		for _, path := range unusedFiles {
 			fullPath := filepath.Join(config.MediaPath, path)
@@ -265,14 +278,14 @@ func main() {
 		}
 	}
 
-	if *listMissing {
+	if listMissing {
 		fmt.Println("\nMissing files:")
 		for _, path := range missingFiles {
 			fmt.Println(path)
 		}
 	}
 
-	if *removeOrphans {
+	if removeOrphans {
 		fmt.Println("\nRemoving orphaned database rows...")
 		removed, err := removeOrphanedRows(db, config, missingFiles)
 		if err != nil {
@@ -282,7 +295,7 @@ func main() {
 		}
 	}
 
-	if *listDupes {
+	if listDupes {
 		fmt.Println("\nDuplicate files:")
 		for hash, files := range hashMap {
 			if len(files) > 1 {
@@ -294,7 +307,7 @@ func main() {
 		}
 	}
 
-	if *removeDupes {
+	if removeDupes {
 		fmt.Println("\nRemoving duplicate files...")
 		for _, files := range hashMap {
 			if len(files) > 1 {
