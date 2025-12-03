@@ -181,16 +181,17 @@ The application follows your suggested architecture:
 ### Key Components
 
 - **File Scanner**: Walks directory tree and dispatches files to worker pool
-- **Worker Pool**: Concurrent goroutines hash files with MD5
+- **Worker Pool**: Concurrent goroutines hash files with xxHash (extremely fast non-cryptographic hash)
 - **Database Layer**: Queries `catalog_product_entity_media_gallery` for all media paths
 - **Comparator**: Builds sets and identifies unused/missing/duplicate files
 - **Cleanup Engine**: Removes files and updates database with transaction safety
 
 ## Performance
 
-- **Parallel Hashing**: 10 workers can process ~1000 files/second on SSD
+- **Parallel Hashing**: 10 workers can process ~1000 files/second on SSD using xxHash
 - **Memory Efficient**: ~100MB RAM for 20k files
 - **Fast Comparison**: O(n) complexity using hash maps
+- **xxHash**: Non-cryptographic hash algorithm optimized for speed (faster than MD5/SHA)
 
 ## Database Tables
 

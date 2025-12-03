@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/md5"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -9,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/cespare/xxhash/v2"
 )
 
 type Config struct {
@@ -447,12 +448,12 @@ func hashFile(path string) (string, error) {
 	}
 	defer f.Close()
 
-	h := md5.New()
+	h := xxhash.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return strconv.FormatUint(h.Sum64(), 16), nil
 }
 
 func getMediaGalleryPaths(db *sql.DB, config Config) ([]string, error) {
