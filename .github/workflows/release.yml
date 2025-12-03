@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Get tag name
+        id: tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          # Build for Linux (amd64)
+          GOOS=linux GOARCH=amd64 go build -o magento2-media-cleaner-linux-amd64 -ldflags "-s -w"
+
+          # Build for Linux (arm64)
+          GOOS=linux GOARCH=arm64 go build -o magento2-media-cleaner-linux-arm64 -ldflags "-s -w"
+
+          # Build for macOS (amd64)
+          GOOS=darwin GOARCH=amd64 go build -o magento2-media-cleaner-darwin-amd64 -ldflags "-s -w"
+
+          # Build for macOS (arm64/M1)
+          GOOS=darwin GOARCH=arm64 go build -o magento2-media-cleaner-darwin-arm64 -ldflags "-s -w"
+
+          # Build for Windows (amd64)
+          GOOS=windows GOARCH=amd64 go build -o magento2-media-cleaner-windows-amd64.exe -ldflags "-s -w"
+
+          # Create checksums
+          sha256sum magento2-media-cleaner-* > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            magento2-media-cleaner-linux-amd64
+            magento2-media-cleaner-linux-arm64
+            magento2-media-cleaner-darwin-amd64
+            magento2-media-cleaner-darwin-arm64
+            magento2-media-cleaner-windows-amd64.exe
+            checksums.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
