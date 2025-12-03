@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,7 +30,7 @@ type Config struct {
 
 type FileInfo struct {
 	RelativePath string
-	Hash         string
+	Hash         uint64
 	Size         int64
 }
 
@@ -57,6 +56,29 @@ type DuplicateMapping struct {
 }
 
 func main() {
+	// Custom usage function to show double dashes for long flags
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Operation flags:\n")
+		fmt.Fprintf(os.Stderr, "  -u, --list-unused         List unused media files\n")
+		fmt.Fprintf(os.Stderr, "  -m, --list-missing        List missing media files\n")
+		fmt.Fprintf(os.Stderr, "  -d, --list-duplicates     List duplicated files\n")
+		fmt.Fprintf(os.Stderr, "  -r, --remove-unused       Remove unused product images\n")
+		fmt.Fprintf(os.Stderr, "  -o, --remove-orphans      Remove orphaned media gallery rows\n")
+		fmt.Fprintf(os.Stderr, "  -x, --remove-duplicates   Remove duplicated files and update database\n")
+		fmt.Fprintf(os.Stderr, "\nConfiguration flags:\n")
+		fmt.Fprintf(os.Stderr, "  --magento-root string     Path to Magento root directory (optional, auto-detects)\n")
+		fmt.Fprintf(os.Stderr, "  --db-host string          Database host (default: localhost)\n")
+		fmt.Fprintf(os.Stderr, "  --db-port string          Database port (default: 3306)\n")
+		fmt.Fprintf(os.Stderr, "  --db-name string          Database name\n")
+		fmt.Fprintf(os.Stderr, "  --db-user string          Database user\n")
+		fmt.Fprintf(os.Stderr, "  --db-pass string          Database password\n")
+		fmt.Fprintf(os.Stderr, "  --db-prefix string        Database table prefix\n")
+		fmt.Fprintf(os.Stderr, "  --media-path string       Path to pub/media/catalog/product\n")
+		fmt.Fprintf(os.Stderr, "  --workers int             Number of parallel workers (default: 10)\n")
+		fmt.Fprintf(os.Stderr, "\nNote: Configuration values are read from app/etc/env.php if not provided\n")
+	}
+
 	// Operation flags with both short and long names
 	var listUnused, listMissing, listDupes, removeUnused, removeOrphans, removeDupes bool
 
@@ -349,7 +371,7 @@ func main() {
 		fmt.Println("\nDuplicate files:")
 		for hash, files := range hashMap {
 			if len(files) > 1 {
-				fmt.Printf("Hash %s:\n", hash)
+				fmt.Printf("Hash %016x:\n", hash)
 				for _, file := range files {
 					fmt.Printf("  - %s\n", file.RelativePath)
 				}
@@ -439,99 +461,117 @@ func connectDB(config Config) (*sql.DB, error) {
 	return db, nil
 }
 
-func scanFilesystem(config Config, stats *Stats) (map[string]FileInfo, map[string][]FileInfo) {
-	filesMap := make(map[string]FileInfo)
-	hashMap := make(map[string][]FileInfo)
+func scanFilesystem(config Config, stats *Stats) (map[string]FileInfo, map[uint64][]FileInfo) {
+	// Channel for file paths
+	fileChan := make(chan string, 10000)
 
-	var mu sync.Mutex
+	// Start recursive directory walker in a single goroutine
+	var walkerWg sync.WaitGroup
+	walkerWg.Add(1)
+	go func() {
+		defer walkerWg.Done()
+		walkDirectoryRecursive(config.MediaPath, fileChan)
+		close(fileChan)
+	}()
+
+	// Worker-local maps for each worker
+	type workerResult struct {
+		filesMap map[string]FileInfo
+		hashMap  map[uint64][]FileInfo
+	}
+
+	resultChan := make(chan workerResult, config.WorkerCount)
 	var wg sync.WaitGroup
 
-	// Channel for file paths - larger buffer for better throughput
-	fileChan := make(chan string, 10000)
-	// Channel for directories to process in parallel
-	dirChan := make(chan string, 100)
-	// Track directories in flight
-	var dirsInFlight int64
-
-	// Start file processing workers
+	// Start file processing workers with local maps
 	for i := 0; i < config.WorkerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			localFiles := make(map[string]FileInfo, 50000)
+			localHashes := make(map[uint64][]FileInfo, 10000)
+
 			for path := range fileChan {
-				processFile(path, config.MediaPath, stats, &mu, filesMap, hashMap)
+				processFileLocal(path, config.MediaPath, stats, localFiles, localHashes)
+			}
+
+			resultChan <- workerResult{
+				filesMap: localFiles,
+				hashMap:  localHashes,
 			}
 		}()
 	}
 
-	// Start directory walker workers (parallel directory scanning)
-	var dirWg sync.WaitGroup
-	numDirWalkers := config.WorkerCount / 2
-	if numDirWalkers < 2 {
-		numDirWalkers = 2
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Wait for walker to finish
+	walkerWg.Wait()
+
+	// Merge all worker results
+	finalFilesMap := make(map[string]FileInfo, 500000)
+	finalHashMap := make(map[uint64][]FileInfo, 100000)
+
+	for result := range resultChan {
+		// Merge files
+		for path, fileInfo := range result.filesMap {
+			finalFilesMap[path] = fileInfo
+		}
+
+		// Merge hashes
+		for hash, files := range result.hashMap {
+			finalHashMap[hash] = append(finalHashMap[hash], files...)
+		}
 	}
 
-	for i := 0; i < numDirWalkers; i++ {
-		dirWg.Add(1)
-		go func() {
-			defer dirWg.Done()
-			for dir := range dirChan {
-				walkDirectory(dir, config.MediaPath, fileChan, dirChan, &dirsInFlight)
-				// Decrement after processing directory
-				if atomic.AddInt64(&dirsInFlight, -1) == 0 {
-					// Last directory finished, close the channel
-					close(dirChan)
-				}
-			}
-		}()
+	// Count duplicates correctly (once per group, not per file)
+	for _, files := range finalHashMap {
+		if len(files) > 1 {
+			atomic.AddInt64(&stats.DuplicateFiles, int64(len(files)-1))
+		}
 	}
 
-	// Start with the root directory
-	atomic.AddInt64(&dirsInFlight, 1)
-	dirChan <- config.MediaPath
-
-	// Wait for all directory walkers to finish
-	dirWg.Wait()
-	close(fileChan)
-
-	// Wait for all file processors to finish
-	wg.Wait()
-
-	return filesMap, hashMap
+	return finalFilesMap, finalHashMap
 }
 
-// walkDirectory processes a single directory and sends subdirs to dirChan
-func walkDirectory(dir string, basePath string, fileChan chan<- string, dirChan chan<- string, dirsInFlight *int64) {
+// walkDirectoryRecursive recursively walks directories and sends files to fileChan
+func walkDirectoryRecursive(dir string, fileChan chan<- string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 
-	subdirs := []string{}
+	// Image extensions to filter
+	imageExts := map[string]bool{
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
+		".gif":  true,
+		".webp": true,
+		".avif": true,
+	}
 
 	for _, entry := range entries {
 		fullPath := filepath.Join(dir, entry.Name())
 
 		if entry.IsDir() {
-			// Collect subdirectories
-			subdirs = append(subdirs, fullPath)
+			// Recursively process subdirectory
+			walkDirectoryRecursive(fullPath, fileChan)
 		} else {
-			// Send file for processing
-			fileChan <- fullPath
-		}
-	}
-
-	// Send all subdirectories at once (increment counter before sending)
-	if len(subdirs) > 0 {
-		atomic.AddInt64(dirsInFlight, int64(len(subdirs)))
-		for _, subdir := range subdirs {
-			dirChan <- subdir
+			// Only process image files
+			ext := strings.ToLower(filepath.Ext(entry.Name()))
+			if imageExts[ext] {
+				fileChan <- fullPath
+			}
 		}
 	}
 }
 
-func processFile(fullPath, basePath string, stats *Stats, mu *sync.Mutex,
-	filesMap map[string]FileInfo, hashMap map[string][]FileInfo) {
+func processFileLocal(fullPath, basePath string, stats *Stats,
+	filesMap map[string]FileInfo, hashMap map[uint64][]FileInfo) {
 
 	relPath := strings.TrimPrefix(fullPath, basePath)
 	if relPath == "" {
@@ -561,31 +601,27 @@ func processFile(fullPath, basePath string, stats *Stats, mu *sync.Mutex,
 		Size:         info.Size(),
 	}
 
-	mu.Lock()
+	// No mutex needed - worker-local maps
 	atomic.AddInt64(&stats.TotalFiles, 1)
 	filesMap[relPath] = fileInfo
 	hashMap[hash] = append(hashMap[hash], fileInfo)
-
-	// Count duplicates
-	if len(hashMap[hash]) > 1 {
-		atomic.AddInt64(&stats.DuplicateFiles, 1)
-	}
-	mu.Unlock()
 }
 
-func hashFile(path string) (string, error) {
+func hashFile(path string) (uint64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	defer f.Close()
 
 	h := xxhash.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+	// Hash only the first 4 MB for performance
+	limitedReader := io.LimitReader(f, 4<<20)
+	if _, err := io.Copy(h, limitedReader); err != nil {
+		return 0, err
 	}
 
-	return strconv.FormatUint(h.Sum64(), 16), nil
+	return h.Sum64(), nil
 }
 
 func getMediaGalleryPaths(db *sql.DB, config Config) ([]string, error) {
