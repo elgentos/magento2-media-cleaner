@@ -181,27 +181,39 @@ Disk space freed: 1247.32 MB
 
 ## Architecture
 
-The application follows your suggested architecture:
+The application uses a high-performance parallel architecture:
 
-1. **Goroutine Pool**: Configurable worker pool scans filesystem and hashes files in parallel
-2. **Single DB Connection**: Reuses one database connection for all queries
-3. **In-Memory Comparison**: Builds hash maps and compares sets in memory (efficient at 20k entries)
-4. **Progress Reporting**: Atomic counters track operations and report detailed statistics
+1. **Parallel Directory Walking**: Multiple goroutines walk the directory tree concurrently
+2. **Worker Pool**: Configurable worker pool hashes files in parallel
+3. **Single DB Connection**: Reuses one database connection for all queries
+4. **In-Memory Comparison**: Builds hash maps and compares sets in memory (efficient at 20k entries)
+5. **Progress Reporting**: Atomic counters track operations and report detailed statistics
 
 ### Key Components
 
-- **File Scanner**: Walks directory tree and dispatches files to worker pool
+- **Directory Walkers**: Parallel goroutines walk subdirectories concurrently using `os.ReadDir`
+- **File Scanner**: Discovers files and dispatches them to worker pool via buffered channels
 - **Worker Pool**: Concurrent goroutines hash files with xxHash (extremely fast non-cryptographic hash)
 - **Database Layer**: Queries `catalog_product_entity_media_gallery` for all media paths
 - **Comparator**: Builds sets and identifies unused/missing/duplicate files
 - **Cleanup Engine**: Removes files and updates database with transaction safety
 
+### Parallel Walking Design
+
+- Uses `os.ReadDir` instead of `filepath.Walk` for parallel directory traversal
+- Directory walkers: `workers / 2` goroutines (minimum 2)
+- File processors: `workers` goroutines (default 10)
+- Large buffered channels (10K files, 100 dirs) for high throughput
+- Atomic counter tracks directories in-flight to detect completion
+
 ## Performance
 
+- **Parallel Directory Walking**: Eliminates single-threaded `filepath.Walk` bottleneck
 - **Parallel Hashing**: 10 workers can process ~1000 files/second on SSD using xxHash
 - **Memory Efficient**: ~100MB RAM for 20k files
 - **Fast Comparison**: O(n) complexity using hash maps
 - **xxHash**: Non-cryptographic hash algorithm optimized for speed (faster than MD5/SHA)
+- **Scales Well**: Performance increases with number of CPU cores
 
 ## Database Tables
 

@@ -401,10 +401,14 @@ func scanFilesystem(config Config, stats *Stats) (map[string]FileInfo, map[strin
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	// Channel for file paths
-	fileChan := make(chan string, 1000)
+	// Channel for file paths - larger buffer for better throughput
+	fileChan := make(chan string, 10000)
+	// Channel for directories to process in parallel
+	dirChan := make(chan string, 100)
+	// Track directories in flight
+	var dirsInFlight int64
 
-	// Start worker pool
+	// Start file processing workers
 	for i := 0; i < config.WorkerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -415,23 +419,70 @@ func scanFilesystem(config Config, stats *Stats) (map[string]FileInfo, map[strin
 		}()
 	}
 
-	// Walk filesystem and send paths to workers
-	go func() {
-		filepath.Walk(config.MediaPath, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return nil
-			}
-			if !info.IsDir() {
-				fileChan <- path
-			}
-			return nil
-		})
-		close(fileChan)
-	}()
+	// Start directory walker workers (parallel directory scanning)
+	var dirWg sync.WaitGroup
+	numDirWalkers := config.WorkerCount / 2
+	if numDirWalkers < 2 {
+		numDirWalkers = 2
+	}
 
+	for i := 0; i < numDirWalkers; i++ {
+		dirWg.Add(1)
+		go func() {
+			defer dirWg.Done()
+			for dir := range dirChan {
+				walkDirectory(dir, config.MediaPath, fileChan, dirChan, &dirsInFlight)
+				// Decrement after processing directory
+				if atomic.AddInt64(&dirsInFlight, -1) == 0 {
+					// Last directory finished, close the channel
+					close(dirChan)
+				}
+			}
+		}()
+	}
+
+	// Start with the root directory
+	atomic.AddInt64(&dirsInFlight, 1)
+	dirChan <- config.MediaPath
+
+	// Wait for all directory walkers to finish
+	dirWg.Wait()
+	close(fileChan)
+
+	// Wait for all file processors to finish
 	wg.Wait()
 
 	return filesMap, hashMap
+}
+
+// walkDirectory processes a single directory and sends subdirs to dirChan
+func walkDirectory(dir string, basePath string, fileChan chan<- string, dirChan chan<- string, dirsInFlight *int64) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	subdirs := []string{}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(dir, entry.Name())
+
+		if entry.IsDir() {
+			// Collect subdirectories
+			subdirs = append(subdirs, fullPath)
+		} else {
+			// Send file for processing
+			fileChan <- fullPath
+		}
+	}
+
+	// Send all subdirectories at once (increment counter before sending)
+	if len(subdirs) > 0 {
+		atomic.AddInt64(dirsInFlight, int64(len(subdirs)))
+		for _, subdir := range subdirs {
+			dirChan <- subdir
+		}
+	}
 }
 
 func processFile(fullPath, basePath string, stats *Stats, mu *sync.Mutex,
