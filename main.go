@@ -49,6 +49,13 @@ type Stats struct {
 	UpdatedGallery    int64
 }
 
+type DuplicateMapping struct {
+	Original  string
+	Duplicate string
+	FullPath  string
+	Size      int64
+}
+
 func main() {
 	// Operation flags with both short and long names
 	var listUnused, listMissing, listDupes, removeUnused, removeOrphans, removeDupes bool
@@ -352,32 +359,63 @@ func main() {
 
 	if removeDupes {
 		fmt.Println("\nRemoving duplicate files...")
+		duplicateStart := time.Now()
+
+		// Collect all duplicate mappings
+		var allMappings []DuplicateMapping
 		for _, files := range hashMap {
 			if len(files) > 1 {
-				// Keep first file, remove others
 				original := files[0].RelativePath
 				for i := 1; i < len(files); i++ {
 					duplicate := files[i]
-					fullPath := filepath.Join(config.MediaPath, duplicate.RelativePath)
-
-					// Update database references
-					vUpdated, gUpdated, err := updateDatabaseForDuplicate(db, config, original, duplicate.RelativePath)
-					if err != nil {
-						fmt.Printf("Error updating database for %s: %v\n", duplicate.RelativePath, err)
-						continue
-					}
-
-					// Remove file
-					if err := os.Remove(fullPath); err == nil {
-						atomic.AddInt64(&stats.RemovedDuplicates, 1)
-						atomic.AddInt64(&stats.BytesFreed, duplicate.Size)
-						atomic.AddInt64(&stats.UpdatedVarchar, vUpdated)
-						atomic.AddInt64(&stats.UpdatedGallery, gUpdated)
-						fmt.Printf("Removed duplicate: %s -> %s\n", duplicate.RelativePath, original)
-					}
+					allMappings = append(allMappings, DuplicateMapping{
+						Original:  original,
+						Duplicate: duplicate.RelativePath,
+						FullPath:  filepath.Join(config.MediaPath, duplicate.RelativePath),
+						Size:      duplicate.Size,
+					})
 				}
 			}
 		}
+
+		fmt.Printf("Found %d duplicates to process\n", len(allMappings))
+
+		// Process in batches of 5000
+		const batchSize = 5000
+		totalBatches := (len(allMappings) + batchSize - 1) / batchSize
+
+		for i := 0; i < len(allMappings); i += batchSize {
+			end := i + batchSize
+			if end > len(allMappings) {
+				end = len(allMappings)
+			}
+
+			batch := allMappings[i:end]
+			batchNum := (i / batchSize) + 1
+
+			fmt.Printf("Processing batch %d/%d (%d duplicates)...\n", batchNum, totalBatches, len(batch))
+
+			// Update database
+			vUpdated, gUpdated, err := updateDatabaseForDuplicatesBatch(db, config, batch)
+			if err != nil {
+				fmt.Printf("Error updating batch %d: %v\n", batchNum, err)
+				continue // Skip file deletion for failed batch
+			}
+
+			// Delete files only after successful database update
+			for _, mapping := range batch {
+				if err := os.Remove(mapping.FullPath); err == nil {
+					atomic.AddInt64(&stats.RemovedDuplicates, 1)
+					atomic.AddInt64(&stats.BytesFreed, mapping.Size)
+				}
+			}
+
+			atomic.AddInt64(&stats.UpdatedVarchar, vUpdated)
+			atomic.AddInt64(&stats.UpdatedGallery, gUpdated)
+		}
+
+		duplicateDuration := time.Since(duplicateStart)
+		fmt.Printf("\nDuplicate removal completed in %v\n", duplicateDuration.Round(time.Millisecond))
 	}
 
 	// Print summary
@@ -642,6 +680,72 @@ func updateDatabaseForDuplicate(db *sql.DB, config Config, original, duplicate s
 	gRows, _ := gResult.RowsAffected()
 
 	return vRows, gRows, nil
+}
+
+func updateDatabaseForDuplicatesBatch(db *sql.DB, config Config, mappings []DuplicateMapping) (int64, int64, error) {
+	if len(mappings) == 0 {
+		return 0, 0, nil
+	}
+
+	varcharTable := config.DBTablePrefix + "catalog_product_entity_varchar"
+	galleryTable := config.DBTablePrefix + "catalog_product_entity_media_gallery"
+
+	// Build SQL for batch updates
+	varcharSQL, varcharArgs := buildBatchUpdateSQL(varcharTable, mappings)
+	gallerySQL, galleryArgs := buildBatchUpdateSQL(galleryTable, mappings)
+
+	// Start transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback() // Rollback if not committed
+
+	// Update varchar table
+	vResult, err := tx.Exec(varcharSQL, varcharArgs...)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to update varchar table: %v", err)
+	}
+	vRows, _ := vResult.RowsAffected()
+
+	// Update gallery table
+	gResult, err := tx.Exec(gallerySQL, galleryArgs...)
+	if err != nil {
+		return vRows, 0, fmt.Errorf("failed to update gallery table: %v", err)
+	}
+	gRows, _ := gResult.RowsAffected()
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return vRows, gRows, fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	return vRows, gRows, nil
+}
+
+func buildBatchUpdateSQL(tableName string, mappings []DuplicateMapping) (string, []interface{}) {
+	var caseClauses []string
+	var whereValues []string
+	var args []interface{}
+
+	for _, mapping := range mappings {
+		// CASE WHEN value = ? THEN ?
+		caseClauses = append(caseClauses, "WHEN ? THEN ?")
+		args = append(args, mapping.Duplicate, mapping.Original)
+
+		// WHERE value IN (?, ...)
+		whereValues = append(whereValues, "?")
+		args = append(args, mapping.Duplicate)
+	}
+
+	sql := fmt.Sprintf(
+		"UPDATE %s SET value = CASE value %s END WHERE value IN (%s)",
+		tableName,
+		strings.Join(caseClauses, " "),
+		strings.Join(whereValues, ", "),
+	)
+
+	return sql, args
 }
 
 func printStats(stats *Stats, dbEntries int, scanDuration, dbDuration, totalDuration time.Duration) {
