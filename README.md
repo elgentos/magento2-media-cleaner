@@ -44,10 +44,10 @@ cd /var/www/html/magento
 ./magento2-media-cleaner -u
 
 # Option 2: Specify Magento root from anywhere (derives media path automatically)
-./magento2-media-cleaner -u -magento-root="/var/www/html/magento"
+./magento2-media-cleaner -u --magento-root="/var/www/html/magento"
 
 # Option 3: Specify media path (auto-detects Magento root by traversing up)
-./magento2-media-cleaner -u -media-path="/var/www/html/magento/pub/media/catalog/product"
+./magento2-media-cleaner -u --media-path="/var/www/html/magento/pub/media/catalog/product"
 ```
 
 The tool will automatically:
@@ -57,26 +57,26 @@ The tool will automatically:
 
 ### Manual Configuration & Overrides
 
-You can provide database credentials manually via command line flags. If you specify `-magento-root`, the tool will load `env.php` first and then **override** with any CLI flags you provide:
+You can provide database credentials manually via command line flags. If you specify `--magento-root`, the tool will load `env.php` first and then **override** with any CLI flags you provide:
 
 ```bash
 # Full manual configuration (no env.php)
 ./magento2-media-cleaner \
-  -db-name="magento2" \
-  -db-user="root" \
-  -db-pass="password" \
-  -media-path="/var/www/html/pub/media/catalog/product"
+  --db-name="magento2" \
+  --db-user="root" \
+  --db-pass="password" \
+  --media-path="/var/www/html/pub/media/catalog/product"
 
 # Load from env.php but override specific values (e.g., use localhost instead of Docker host)
 ./magento2-media-cleaner \
-  -magento-root="/var/www/html/magento" \
-  -db-host="localhost" \
-  -db-port="3308"
+  --magento-root="/var/www/html/magento" \
+  --db-host="localhost" \
+  --db-port="3308"
 
 # Override just the database name
 ./magento2-media-cleaner \
-  -magento-root="/var/www/html/magento" \
-  -db-name="different_database"
+  --magento-root="/var/www/html/magento" \
+  --db-name="different_database"
 ```
 
 **How overrides work:**
@@ -133,15 +133,15 @@ You can provide database credentials manually via command line flags. If you spe
 
 All configuration flags are now optional. The tool will attempt to read from `app/etc/env.php` if not provided:
 
-- `-magento-root`: Path to Magento root directory (auto-detects if not provided)
-- `-db-name`: Database name (reads from env.php if not provided)
-- `-db-user`: Database username (reads from env.php if not provided)
-- `-db-pass`: Database password (reads from env.php if not provided)
-- `-db-host`: Database host (reads from env.php if not provided, default: `localhost`)
-- `-db-port`: Database port (reads from env.php if not provided, default: `3306`)
-- `-db-prefix`: Database table prefix (reads from env.php if not provided)
-- `-media-path`: Absolute path to `pub/media/catalog/product` directory (derives from magento-root if not provided)
-- `-workers`: Number of parallel workers for file scanning (default: `10`)
+- `--magento-root`: Path to Magento root directory (auto-detects if not provided)
+- `--db-name`: Database name (reads from env.php if not provided)
+- `--db-user`: Database username (reads from env.php if not provided)
+- `--db-pass`: Database password (reads from env.php if not provided)
+- `--db-host`: Database host (reads from env.php if not provided, default: `localhost`)
+- `--db-port`: Database port (reads from env.php if not provided, default: `3306`)
+- `--db-prefix`: Database table prefix (reads from env.php if not provided)
+- `--media-path`: Absolute path to `pub/media/catalog/product` directory (derives from magento-root if not provided)
+- `--workers`: Number of parallel workers for file scanning (default: `10`)
 
 ### Operation Flags
 
