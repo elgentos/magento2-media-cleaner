@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/cespare/xxhash/v2"
@@ -209,7 +210,11 @@ func main() {
 		config.DBPass = *dbPass
 	}
 	if prefixSet {
-		config.DBTablePrefix = *dbPrefix
+		sanitized := sanitizeTablePrefix(*dbPrefix)
+		if sanitized != *dbPrefix {
+			fmt.Printf("Warning: db-prefix sanitized from '%s' to '%s'\n", *dbPrefix, sanitized)
+		}
+		config.DBTablePrefix = sanitized
 	}
 
 	// Set media path and workers
@@ -691,33 +696,6 @@ func removeOrphanedRows(db *sql.DB, config Config, missingFiles []string) (int64
 	return totalAffected, nil
 }
 
-func updateDatabaseForDuplicate(db *sql.DB, config Config, original, duplicate string) (int64, int64, error) {
-	varcharTable := config.DBTablePrefix + "catalog_product_entity_varchar"
-	galleryTable := config.DBTablePrefix + "catalog_product_entity_media_gallery"
-
-	// Update varchar table
-	vResult, err := db.Exec(
-		fmt.Sprintf("UPDATE %s SET value = ? WHERE value = ?", varcharTable),
-		original, duplicate,
-	)
-	if err != nil {
-		return 0, 0, err
-	}
-	vRows, _ := vResult.RowsAffected()
-
-	// Update gallery table
-	gResult, err := db.Exec(
-		fmt.Sprintf("UPDATE %s SET value = ? WHERE value = ?", galleryTable),
-		original, duplicate,
-	)
-	if err != nil {
-		return vRows, 0, err
-	}
-	gRows, _ := gResult.RowsAffected()
-
-	return vRows, gRows, nil
-}
-
 func updateDatabaseForDuplicatesBatch(db *sql.DB, config Config, mappings []DuplicateMapping) (int64, int64, error) {
 	if len(mappings) == 0 {
 		return 0, 0, nil
@@ -941,7 +919,7 @@ func loadConfigFromEnvPHP(magentoRoot string) (Config, error) {
 		DBName:        getStringValue(envData, "dbname", ""),
 		DBUser:        getStringValue(envData, "username", ""),
 		DBPass:        getStringValue(envData, "password", ""),
-		DBTablePrefix: getStringValue(envData, "table_prefix", ""),
+		DBTablePrefix: sanitizeTablePrefix(getStringValue(envData, "table_prefix", "")),
 	}
 
 	// Extract port from host if it contains a colon
@@ -961,4 +939,16 @@ func getStringValue(data map[string]interface{}, key, defaultVal string) string 
 		}
 	}
 	return defaultVal
+}
+
+// sanitizeTablePrefix removes any characters that are not alphanumeric or underscore
+// This prevents SQL injection when the prefix is concatenated into table names
+func sanitizeTablePrefix(prefix string) string {
+	var result strings.Builder
+	for _, r := range prefix {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }
